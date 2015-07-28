@@ -1,5 +1,6 @@
 package edu.rit.csh.wikiData
 
+import java.io.File
 import java.sql.Timestamp
 import java.util.Properties
 
@@ -11,6 +12,8 @@ import org.apache.spark._
 import org.apache.spark.sql.{SaveMode, SQLContext}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming._
+
+import scala.io.Source
 
 /** Lazily instantiated singleton instance of SQLContext */
 object SQLContextSingleton {
@@ -35,6 +38,7 @@ case class Anomaly(channel: String, page: String, mean: Double, stdDev: Double, 
 
 object WikiStream {
   final val DAY: Long = 86400000L
+  final val HOUR: Long = 3600000L
 
   val (url, props) = {
     try {
@@ -53,42 +57,10 @@ object WikiStream {
     }
   }
 
-  def insertBlanks(data: List[(Long, Int)], gapSize: Long, endTime: Long): List[Int] = {
-    def process(data: List[(Long, Int)], current: Option[Long]): List[Int] = (data, current) match {
-      case (Nil, None) => Nil
-      case (Nil, Some(last)) =>
-        if (last - endTime > gapSize) 0 :: process(Nil, Some(last - gapSize))
-        else Nil
-      case (lst @ (time, count) :: tail, None) => count :: process(tail, Some(time))
-      case (lst @ (time, count) :: tail, Some(last)) =>
-        if (last - time > gapSize) 0 :: process(lst, Some(last - gapSize))
-        else count :: process(tail, Some(time))
-    }
-    process(data, None)
-  }
-
-
-  /** Groups the input data by a sliding window with the duration given. This returns the first
-    * element in the window along with the amount of items in the window */
-  private def groupBySlidingWindow[T](data: Seq[T], duration: T)(implicit num: Numeric[T]): Seq[(T, Int)] = {
-    def process(data: Seq[T], accum: Seq[(T, Int)]): Seq[(T, Int)] = data match {
-      case Nil => accum
-      case x :: xs => accum match {
-        case Nil => process(xs, Seq((x, 1)))
-        case lst @ (curTime, curCount) :: ys =>
-          if (num.lteq (num.abs (x - curTime), duration) ) {
-            process(xs, (curTime, curCount + 1) :: ys)
-          } else {
-            process(xs, (x, 1) :: lst)
-          }
-      }
-    }
-    process(data, Seq.empty).reverse
-  }
-
-  private def processStream(ssc: StreamingContext, server: String, channels: Seq[String]): Unit = {
-    val sources = channels.map(channel => ssc.receiverStream(new IrcReceiver(server, channel, StorageLevel.MEMORY_ONLY)))
-    val stream = ssc.union(sources)
+  private def processStream(ssc: StreamingContext, server: String, channels: List[String]): Unit = {
+    val stream = ssc.union(channels.grouped(50).map { group =>
+      ssc.receiverStream(new IrcReceiver(server, group, StorageLevel.MEMORY_ONLY))
+    }.toSeq)
 
     /** save everything to JDBC */
     stream.foreachRDD { rdd =>
@@ -156,28 +128,22 @@ object WikiStream {
     }
 
     /** Anomaly detection for each page in the channel. */
-      stream.map(e => ((e.channel, e.page), e.timestamp))
-      .groupByKeyAndWindow(Minutes(60 * 24), Minutes(1))
+    stream.map(e => ((e.channel, e.page), e.timestamp))
+      .groupByKeyAndWindow(Minutes(60 * 24), Minutes(10))
       .flatMap { case ((channel, page), timestamps) =>
       val timeList = timestamps.toList
-      if (timeList.length > 5) {
-        val edits = timeList.map(_.getTime).sorted
-        val groups = Utils.groupPoints(edits, System.currentTimeMillis(), System.currentTimeMillis() - 1.days.toMillis, 1.hours.toMillis)
-        val formattedData = groups.map(_._2)
+      val edits = timeList.map(_.getTime).sorted(Ordering[Long].reverse)
+      val groups = Utils.groupPoints(edits, System.currentTimeMillis(), System.currentTimeMillis() - DAY, HOUR)
+      val formattedData = groups.map(_._2)
+      if (formattedData.count(_ != 0) > 10) {
         val mean = Utils.movingWeightedAverage(formattedData, formattedData.length)
         val sd = Utils.stdDev(formattedData, mean)
         println(
-          s"""
-              |page      = $page, mean = $mean, std. dev. = $sd
+          s"""|page      = $page, mean = $mean, std. dev. = $sd
               |raw edits = ${edits.mkString(", ")}
               |groups    = ${groups.mkString(", ")}
-              |formated  = (${formattedData.length}) = ${formattedData.mkString(", ")}
-           """.stripMargin)
-        if (formattedData.count(_ == 0) < 10) {
-          Some(Anomaly(channel, page, mean, sd, new Timestamp(System.currentTimeMillis()), formattedData.head))
-        } else {
-          None
-        }
+              |formatted  = (${formattedData.length}) = ${formattedData.mkString(", ")}""".stripMargin)
+        Some(Anomaly(channel, page, mean, sd, new Timestamp(System.currentTimeMillis()), formattedData.head))
       } else {
         None
       }
@@ -192,23 +158,13 @@ object WikiStream {
   def main(args: Array[String]) = {
     val conf = new SparkConf()
       .setAppName("IRC Wikipedia Page Edit Stream")
-      .registerKryoClasses(Array(classOf[Edit], classOf[PageEdit], classOf[UserEdit], classOf[ChannelEdit]))
+      .registerKryoClasses(Array(classOf[Edit], classOf[PageEdit], classOf[UserEdit], classOf[ChannelEdit], classOf[Anomaly]))
     val sparkContext = new SparkContext(conf)
     val ssc = new StreamingContext(sparkContext, Seconds(5))
-    ssc.checkpoint("/tmp")
+    ssc.checkpoint("/tmp/spark-checkpoint")
 
-    /*
-    val channels = Seq("#en.wikisource", "#en.wikibooks", "#en.wikinews", "#en.wikiquote",
-      "#en.wikipedia", "#wikidata.wikipedia", "#de.wikipedia", "#ru.wikipedia", "#nl.wikipedia",
-      "#it.wikipedia", "#es.wikipedia", "#vi.wikipedia", "#ja.wikipedia", "#pt.wikipedia",
-      "#zh.wikipedia", "#uk.wikipedia", "#fa.wikipedia", "#ar.wikipedia", "#fi.wikipedia",
-      "#ro.wikipedia", "#hu.wikipedia", "#sr.wikipedia", "#ko.wikipedia", "#bg.wikipedia",
-      "#la.wikipedia", "#el.wikipedia", "#hi.wikipedia", "#th.wikipedia", "#is.wikipedia",
-      "#ga.wikipedia", "#ne.wikipedia")
-    */
-
-    //val channels = Seq("#en.wikisource", "#en.wikibooks", "#en.wikinews", "#en.wikiquote", "#en.wikipedia", "#wikidata.wikipedia")
-    val channels = Seq("#en.wikipedia")
+    val channels = if (args.length > 0) Source.fromFile(new File(args(0))).getLines().toList
+      else List("#en.wikisource", "#en.wikibooks", "#en.wikinews", "#en.wikiquote", "#en.wikipedia", "#wikidata.wikipedia")
 
     processStream(ssc, "irc.wikimedia.org", channels)
 

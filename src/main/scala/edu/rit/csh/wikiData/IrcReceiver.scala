@@ -19,7 +19,7 @@ case class Edit(channel: String,
                 comment: String,
                 timestamp: Timestamp = new Timestamp(System.currentTimeMillis()))
 
-private class IrcReceiver(server: String, channel: String, storageLevel: StorageLevel)
+private class IrcReceiver(server: String, channel: List[String], storageLevel: StorageLevel)
   extends Receiver[Edit](storageLevel) with Logging {
 
   private val nick = s"jd-${Random.nextInt()}"
@@ -30,7 +30,6 @@ private class IrcReceiver(server: String, channel: String, storageLevel: Storage
       .setLogin(nick)
       .setRealName(nick)
       .setServerHostname(server)
-      .addAutoJoinChannel(channel)
       .addListener(new ListenerAdapter[PircBotX] {
       val extendedCode = (c: Char) => c < 32 || c > 127
 
@@ -43,15 +42,16 @@ private class IrcReceiver(server: String, channel: String, storageLevel: Storage
         }
       }
     })
+    channel foreach { c => conf.addAutoJoinChannel(c) }
     conf.buildConfiguration()
   }
 
   private lazy val bot: PircBotX = new PircBotX(conf)
 
   override def onStart(): Unit = {
-    logInfo("starting up IRC receiver")
+    logInfo(s"starting up IRC receiver for $channel")
     bot.startBot()
-    logInfo("finished starting IRC receiver")
+    logInfo(s"finished starting IRC receiver for $channel")
   }
 
   override def onStop(): Unit = {

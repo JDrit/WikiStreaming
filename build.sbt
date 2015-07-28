@@ -14,4 +14,3 @@ sparkComponents := Seq("core", "sql", "streaming")
 libraryDependencies ++= Seq("org.pircbotx" % "pircbotx" % "2.0.1",
                             "org.scalaj" % "scalaj-http_2.10" % "1.1.5",
                             "org.json4s" %% "json4s-native" % "3.3.0.RC3")
-
