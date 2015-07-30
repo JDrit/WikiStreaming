@@ -5,31 +5,18 @@ import java.sql.Timestamp
 import java.util.Properties
 
 import scala.concurrent.duration._
+import scala.io.Source
 import Numeric.Implicits._
 
-import com.typesafe.config.ConfigFactory
 import org.apache.spark._
-import org.apache.spark.sql.{SaveMode, SQLContext}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming._
+import org.json4s._
+import org.json4s.JsonDSL._
+import org.json4s.jackson.JsonMethods._
 
-import scala.io.Source
+import scalaj.http.Http
 
-/** Lazily instantiated singleton instance of SQLContext */
-object SQLContextSingleton {
-  @transient private var instance: Option[SQLContext] = None
-
-  // Instantiate SQLContext on demand
-  def getInstance(sparkContext: SparkContext): SQLContext = synchronized {
-    instance match {
-      case Some(inst) => inst
-      case None =>
-        val i = new SQLContext(sparkContext)
-        instance = Some(i)
-        i
-    }
-  }
-}
 
 case class PageEdit(channel: String, page: String, count: Long, timestamp: Timestamp)
 case class UserEdit(channel: String, username: String, count: Long, timestamp: Timestamp)
@@ -39,37 +26,41 @@ case class Anomaly(channel: String, page: String, mean: Double, stdDev: Double, 
 object WikiStream {
   final val DAY: Long = 86400000L
   final val HOUR: Long = 3600000L
-
-  val (url, props) = {
-    try {
-      val conf = ConfigFactory.load()
-      val props = new Properties()
-      props.put("user", conf.getString("database.user"))
-      props.put("password", conf.getString("database.password"))
-      props.put("host", conf.getString("database.host"))
-      props.put("ssl", conf.getBoolean("database.ssl").toString)
-      props.put("sslmode", conf.getString("database.sslmode"))
-      (conf.getString("database.url"), props)
-    } catch {
-      case ex: Throwable =>
-        println(s"Could not read configuration file:\n$ex")
-        throw ex
-    }
-  }
+  final val NAMENODE = "jd-5.ih.csh.rit.edu:8020"
+  final val WEBSERVER = "http://starfighter.csh.rit.edu:9000"
 
   private def processStream(ssc: StreamingContext, server: String, channels: List[String]): Unit = {
-    val stream = ssc.union(channels.grouped(50).map { group =>
-      ssc.receiverStream(new IrcReceiver(server, group, StorageLevel.MEMORY_ONLY))
-    }.toSeq)
+    val stream = ssc.receiverStream(new IrcReceiver(server, channels, StorageLevel.MEMORY_ONLY))
 
     /** save everything to JDBC */
     stream.foreachRDD { rdd =>
-      val sqlContext = SQLContextSingleton.getInstance(rdd.sparkContext)
-      import sqlContext.implicits._
-      rdd.toDF().write.mode(SaveMode.Append).jdbc(url, "log", props)
+      val data = rdd.map { edit =>
+        render(Map("channel" -> edit.channel,
+            "comment" -> edit.comment,
+            "diff" -> edit.diff,
+            "page" -> edit.page,
+            "timestamp" -> edit.timestamp.toString,
+            "username" -> edit.username))
+      }.collect.toList
+      val json = compact(render(data))
+      //Http(s"$WEBSERVER/api/add_log").postData(json).asString
+    }
+
+    /**
+     * The number of edits per channel in the last hour - MOST IMPORTANT
+     * This must keep its SLA since this info is display to the user in near real-time
+     */
+    stream.map(_.channel).countByValueAndWindow(Minutes(60), Seconds(5)).foreachRDD { rdd =>
+      val data = rdd.collect()
+        .sorted(Ordering.by[(String, Long), Long](_._2).reverse)
+        .map { case (channel, count) => render(("channel" -> channel) ~ ("count" -> count)) }
+        .toList
+      val json = pretty(render(data))
+      println(json)
     }
 
     /** the top most active pages per channel */
+    /*
     stream.map(e => (e.channel, e.page))
       .countByValueAndWindow(Minutes(60), Minutes(1))
       .reduceByKey(_ + _)
@@ -153,6 +144,7 @@ object WikiStream {
       rdd.toDF().write.mode(SaveMode.Append).jdbc(url, "anomalies", props)
       println("---------------------------------------------------------")
     }
+    */
   }
 
   def main(args: Array[String]) = {

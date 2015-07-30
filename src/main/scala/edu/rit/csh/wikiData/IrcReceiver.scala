@@ -10,6 +10,7 @@ import org.pircbotx.{PircBotX, Configuration}
 import org.pircbotx.hooks.ListenerAdapter
 import org.pircbotx.hooks.types.GenericMessageEvent
 
+import scala.concurrent.Future
 import scala.util.Random
 
 case class Edit(channel: String,
@@ -19,13 +20,12 @@ case class Edit(channel: String,
                 comment: String,
                 timestamp: Timestamp = new Timestamp(System.currentTimeMillis()))
 
-private class IrcReceiver(server: String, channel: List[String], storageLevel: StorageLevel)
+private class IrcReceiver(server: String, channels: List[String], storageLevel: StorageLevel)
   extends Receiver[Edit](storageLevel) with Logging {
 
   private val nick = s"jd-${Random.nextInt()}"
 
-  private lazy val conf: Configuration[PircBotX] = {
-    val conf = new Configuration.Builder()
+  private def generateConf(): Configuration.Builder[PircBotX] = new Configuration.Builder()
       .setName(nick)
       .setLogin(nick)
       .setRealName(nick)
@@ -42,22 +42,23 @@ private class IrcReceiver(server: String, channel: List[String], storageLevel: S
         }
       }
     })
-    channel foreach { c => conf.addAutoJoinChannel(c) }
-    conf.buildConfiguration()
-  }
 
-  private lazy val bot: PircBotX = new PircBotX(conf)
+  private lazy val bots: List[PircBotX] = channels.grouped(30).map { group =>
+    val conf = generateConf()
+    group.foreach(channel => conf.addAutoJoinChannel(channel))
+    new PircBotX(conf.buildConfiguration())
+  }.toList
 
   override def onStart(): Unit = {
-    logInfo(s"starting up IRC receiver for $channel")
-    bot.startBot()
-    logInfo(s"finished starting IRC receiver for $channel")
+    new Thread {
+      override def run(): Unit = {
+        bots.foreach(_.startBot())
+      }
+    }.run()
   }
 
   override def onStop(): Unit = {
     logInfo("shutting down IRC receiver")
-    bot.stopBotReconnect()
-    conf.getListenerManager.shutdown(bot)
   }
 
 
