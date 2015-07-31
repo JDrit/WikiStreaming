@@ -2,7 +2,7 @@ package edu.rit.csh.wikiData
 
 import Numeric.Implicits._
 
-object Utils {
+object ListUtils {
 
   /**
    * Splits the list on where the conditional returns false
