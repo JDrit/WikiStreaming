@@ -31,24 +31,24 @@ object WikiStream {
           ("comment" -> edit.comment) ~
           ("diff" -> edit.diff) ~
           ("page" -> edit.page) ~
-          ("timestamp" -> edit.timestamp.toString) ~
+          ("timestamp" -> edit.timestamp.getTime) ~
           ("username" -> edit.username)
       }.toList
-      HttpUtils.postLog(compact(render(data)))
+      HttpUtils.logs(compact(render(data)))
     }
 
     /**
      * The number of edits per channel in the last hour - MOST IMPORTANT
      * This must keep its SLA since this info is display to the user in near real-time
      */
-    stream.map(_.channel).countByValueAndWindow(Minutes(60), Seconds(1)).foreachRDD { rdd =>
+    stream.map(_.channel).countByValueAndWindow(Minutes(60), Seconds(5)).foreachRDD { rdd =>
       val data = rdd.collect()
         .sorted(Ordering.by[(String, Long), Long](_._2).reverse)
         .map { case (channel, count) => ("channel" -> channel) ~ ("count" -> count) }
         .toList
       val json = pretty(render(data.take(10)))
       println("\n\n\n\n\n\n\n\n\n\n\n\n" + json)
-      HttpUtils.postPageEdits(compact(render(("timestamp" -> System.currentTimeMillis()) ~ ("page_edits" -> data))))
+      HttpUtils.pageEdits(compact(render(("timestamp" -> System.currentTimeMillis()) ~ ("page_edits" -> data))))
     }
 
     /** the top most active pages per channel */
@@ -67,6 +67,7 @@ object WikiStream {
         ("channel" -> pageEdit.channel) ~ ("page" -> pageEdit.page) ~ ("count" -> pageEdit.count)
       }.toList
      val json = compact(render(("timestamp" -> System.currentTimeMillis()) ~ ("top_pages" -> data)))
+      HttpUtils.activePages(json)
     }
 
     /** the top most active users per channel */
@@ -87,6 +88,7 @@ object WikiStream {
           ("count" -> userEdit.count)
       }.toList
       val json = compact(render(("timestamp" -> System.currentTimeMillis()) ~ ("top_users" -> data)))
+      HttpUtils.activeUsers(json)
     }
 
     /** vandalism detection for only english domains */
@@ -101,10 +103,10 @@ object WikiStream {
           ("comment" -> edit.comment) ~
           ("diff" -> edit.diff) ~
           ("page" -> edit.page) ~
-          ("timestamp" -> edit.timestamp.toString) ~
+          ("timestamp" -> edit.timestamp.getTime) ~
           ("username" -> edit.username)
       }.toList
-      val json = compact(render(data))
+      HttpUtils.vandalism(compact(render(data)))
     }
 
     /** Anomaly detection for each page in the channel. */
@@ -133,10 +135,10 @@ object WikiStream {
           ("page" -> anomaly.page) ~
           ("mean" -> anomaly.mean) ~
           ("standard_deviation" -> anomaly.stdDev) ~
-          ("timestamp" -> anomaly.timestamp.toString) ~
+          ("timestamp" -> anomaly.timestamp.getTime) ~
           ("count" -> anomaly.count)
       }.toList
-      val json = compact(render(data))
+      HttpUtils.anomalies(compact(render(data)))
     }
   }
 
@@ -145,7 +147,7 @@ object WikiStream {
       .setAppName("IRC Wikipedia Page Edit Stream")
       .registerKryoClasses(Array(classOf[Edit], classOf[PageEdit], classOf[UserEdit], classOf[Anomaly]))
     val sparkContext = new SparkContext(conf)
-    val ssc = new StreamingContext(sparkContext, Seconds(1))
+    val ssc = new StreamingContext(sparkContext, Seconds(5))
     ssc.checkpoint("/tmp/spark-checkpoint")
 
     val channels = if (args.length > 0) Source.fromFile(new File(args(0))).getLines().toList

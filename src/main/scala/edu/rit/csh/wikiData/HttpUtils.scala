@@ -5,23 +5,25 @@ import org.apache.spark.Logging
 import scalaj.http.Http
 
 object HttpUtils extends Logging {
-  final val WEBSERVER = "http://starfighter.csh.rit.edu:9000"
+  final val webServer = "http://starfighter.csh.rit.edu:9000"
 
-  def postLog(json: String): Unit = try {
-    Http(s"$WEBSERVER/api/add_log").postData(json).asString
+  private def post(extension: String)(payload: String): Unit = try {
+    Http(s"$webServer/$extension").header("content-type", "application/json")
+      .postData(payload).asString
   } catch {
-    case ex: Throwable => logError("could not update webserver's log")
+    case t: Throwable => logError(s"could not post to $extension")
   }
 
-  def postPageEdits(json: String): Unit = try {
-    Http(s"$WEBSERVER/api/add_page_edits").postData(json).asString
-  } catch {
-    case ex: Throwable => logError("could not update page edits")
-  }
+  def logs: String => Unit = post("api/add_log")
 
-  def postActivePages(json: String): Unit = try {
-    Http(s"$WEBSERVER/api/add_top_pages").postData(json).asString
-  } catch {
-    case ex: Throwable => logError("could not update top pages")
-  }
+  def pageEdits: String => Unit = post("api/add_page_edits")
+
+  def activePages: String => Unit = post("api/add_top_pages")
+
+  def activeUsers: String => Unit = post("api/add_top_users")
+
+  def vandalism: String => Unit = post("api/add_vandalism")
+
+  def anomalies: String => Unit = post("api/add_anomalies")
+
 }
