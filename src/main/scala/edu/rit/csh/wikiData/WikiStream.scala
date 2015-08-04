@@ -41,7 +41,7 @@ object WikiStream {
      * The number of edits per channel in the last hour - MOST IMPORTANT
      * This must keep its SLA since this info is display to the user in near real-time
      */
-    stream.map(_.channel).countByValueAndWindow(Minutes(60), Seconds(5)).foreachRDD { rdd =>
+    stream.map(_.channel).countByValueAndWindow(Minutes(60), Seconds(10)).foreachRDD { rdd =>
       val data = rdd.collect()
         .sorted(Ordering.by[(String, Long), Long](_._2).reverse)
         .map { case (channel, count) => ("channel" -> channel) ~ ("count" -> count) }
@@ -147,10 +147,10 @@ object WikiStream {
       .setAppName("IRC Wikipedia Page Edit Stream")
       .registerKryoClasses(Array(classOf[Edit], classOf[PageEdit], classOf[UserEdit], classOf[Anomaly]))
     val sparkContext = new SparkContext(conf)
-    val ssc = new StreamingContext(sparkContext, Seconds(5))
+    val ssc = new StreamingContext(sparkContext, Seconds(10))
     ssc.checkpoint("/tmp/spark-checkpoint")
 
-    val channels = if (args.length > 0) Source.fromFile(new File(args(0))).getLines().toList
+    val channels = if (args.length > 0) sparkContext.textFile(args(0)).collect().toList
       else List("#en.wikisource", "#en.wikibooks", "#en.wikinews", "#en.wikiquote", "#en.wikipedia", "#wikidata.wikipedia")
 
     processStream(ssc, "irc.wikimedia.org", channels)

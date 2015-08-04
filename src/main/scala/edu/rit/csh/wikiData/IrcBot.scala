@@ -33,7 +33,7 @@ private class IrcBot(
   }
 
   override def onMessage(channel: String, sender: String, login: String, hostname: String, message: String): Unit = {
-    processInput(message, channel, System.currentTimeMillis()) foreach receiver.store
+    processInput(message, channel.substring(1), System.currentTimeMillis()) foreach receiver.store
   }
 
   private def processInput(line: String, channel: String, timestamp: Long): Option[Edit] = try {
